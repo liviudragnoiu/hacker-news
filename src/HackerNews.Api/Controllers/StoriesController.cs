@@ -15,11 +15,12 @@ public sealed class StoriesController(
     [HttpGet]
     [ProducesResponseType<IReadOnlyList<StoryResponse>>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status503ServiceUnavailable)]
     public async Task<ActionResult<IReadOnlyList<StoryResponse>>> GetBestStories(
         [FromQuery, Range(1, 500)] int n,
         CancellationToken cancellationToken)
     {
-        if (n > options.Value.MaxStories)
+        if (n < 1 || n > options.Value.MaxStories)
         {
             return BadRequest(new ProblemDetails
             {
@@ -28,7 +29,19 @@ public sealed class StoriesController(
             });
         }
 
-        var stories = await hackerNewsService.GetBestStoriesAsync(n, cancellationToken);
-        return Ok(stories);
+        try
+        {
+            var stories = await hackerNewsService.GetBestStoriesAsync(n, cancellationToken);
+            return Ok(stories);
+        }
+        catch (HackerNewsUnavailableException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Hacker News is temporarily unavailable.",
+                Detail = "Please try again shortly."
+            });
+        }
     }
 }

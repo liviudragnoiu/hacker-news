@@ -51,10 +51,29 @@ For example, `GET http://localhost:5292/api/stories?n=10` returns up to 10 stori
 
 - Story IDs come from Hacker News' `beststories.json`; item details are fetched from `item/{id}.json`.
 - The API loads up to 500 entries, sorts the valid story details by score descending, and uses posting time as a deterministic tie-breaker.
-- A process-wide in-memory cache keeps the ranked snapshot for 60 seconds and individual story details for 300 seconds. This means repeated requests are served without repeated upstream calls in the normal case; after a restart, the cache starts cold.
+- A process-wide in-memory cache keeps the ranked snapshot for 60 seconds and individual story details for 300 seconds. A hosted background service warms the snapshot at startup and refreshes it every 45 seconds, reusing still-cached item details. The cache starts cold after a restart; refresh failures are logged and retried on the next interval.
 - A singleton refresh lock prevents concurrent requests from rebuilding the same expired snapshot. At most 8 item requests are sent upstream concurrently.
 - Deleted or incomplete items are omitted. Missing URL values are returned as `null`; absent score and comment counts default to zero.
-- Cache durations, the upstream base URL, concurrency limit, and story limit are configurable in `appsettings.json`.
+- Upstream connection failures, timeouts, HTTP errors, and invalid JSON return `503 Service Unavailable` with Problem Details. Client-request cancellation is allowed to propagate.
+- Cache durations, the background refresh interval, upstream base URL, concurrency limit, and story limit are configurable in `appsettings.json`.
+
+## Request and cache flow
+
+```mermaid
+flowchart TD
+	Client[Client] -->|GET /api/stories?n=...| Controller[StoriesController]
+	Controller --> Service[HackerNewsService]
+	Service -->|Read or update| Cache[(IMemoryCache)]
+	Cache -->|Cached ranked snapshot| Service
+	Service -->|Cache miss or refresh| HackerNews[Hacker News API]
+	HackerNews -->|Best story IDs and item details| Service
+	Service -->|Rank by score and select top n| Controller
+	Controller --> Client
+	Worker[BackgroundService<br/>startup and every 45 seconds] -->|Refresh snapshot| Service
+
+	CacheNote[Snapshot TTL: 60 seconds<br/>Item details TTL: 300 seconds]
+	Cache -.-> CacheNote
+```
 
 ## Possible enhancements
 

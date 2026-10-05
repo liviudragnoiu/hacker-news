@@ -14,6 +14,7 @@ builder.Services.AddHttpClient("HackerNews", client =>
     client.Timeout = TimeSpan.FromSeconds(15);
 });
 builder.Services.AddSingleton<HackerNewsService>();
+builder.Services.AddHostedService<BestStoriesCacheRefreshService>();
 
 var app = builder.Build();
 

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
+using System.Text.Json;
 using hacker_news.Models;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
@@ -25,9 +26,16 @@ public sealed class HackerNewsService(
         return stories.Take(count).ToArray();
     }
 
-    private async Task<IReadOnlyList<StoryResponse>> GetSnapshotAsync(CancellationToken cancellationToken)
+    public async Task RefreshSnapshotAsync(CancellationToken cancellationToken)
     {
-        if (cache.TryGetValue(BestStoriesCacheKey, out IReadOnlyList<StoryResponse>? cachedStories))
+        await GetSnapshotAsync(cancellationToken, forceRefresh: true);
+    }
+
+    private async Task<IReadOnlyList<StoryResponse>> GetSnapshotAsync(
+        CancellationToken cancellationToken,
+        bool forceRefresh = false)
+    {
+        if (!forceRefresh && cache.TryGetValue(BestStoriesCacheKey, out IReadOnlyList<StoryResponse>? cachedStories))
         {
             return cachedStories!;
         }
@@ -35,7 +43,7 @@ public sealed class HackerNewsService(
         await _snapshotLock.WaitAsync(cancellationToken);
         try
         {
-            if (cache.TryGetValue(BestStoriesCacheKey, out cachedStories))
+            if (!forceRefresh && cache.TryGetValue(BestStoriesCacheKey, out cachedStories))
             {
                 return cachedStories!;
             }
@@ -85,9 +93,7 @@ public sealed class HackerNewsService(
 
     private async Task<IReadOnlyList<int>> GetBestStoryIdsAsync(CancellationToken cancellationToken)
     {
-        var storyIds = await _httpClient.GetFromJsonAsync<List<int>>(
-            "beststories.json",
-            cancellationToken);
+        var storyIds = await GetFromUpstreamAsync<List<int>>("beststories.json", cancellationToken);
 
         return storyIds ?? [];
     }
@@ -108,7 +114,7 @@ public sealed class HackerNewsService(
                 return cachedStory;
             }
 
-            var story = await _httpClient.GetFromJsonAsync<HackerNewsItem>(
+            var story = await GetFromUpstreamAsync<HackerNewsItem>(
                 $"item/{storyId}.json",
                 cancellationToken);
 
@@ -125,6 +131,26 @@ public sealed class HackerNewsService(
         finally
         {
             _upstreamGate.Release();
+        }
+    }
+
+    private async Task<T?> GetFromUpstreamAsync<T>(string relativeUri, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _httpClient.GetFromJsonAsync<T>(relativeUri, cancellationToken);
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new HackerNewsUnavailableException("The Hacker News API request timed out.", exception);
+        }
+        catch (HttpRequestException exception)
+        {
+            throw new HackerNewsUnavailableException("The Hacker News API request failed.", exception);
+        }
+        catch (JsonException exception)
+        {
+            throw new HackerNewsUnavailableException("The Hacker News API returned invalid JSON.", exception);
         }
     }
 }
